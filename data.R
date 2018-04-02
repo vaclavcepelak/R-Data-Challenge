@@ -143,8 +143,6 @@ instagram_data <- unique(instagram_data)
 
 ### Locations data #################################################################
 
-# debugonce(get_max_density)
-
 locations <- instagram_data[, 
                             .(lon_ = median(longitude),
                               lat_ = median(latitude),
@@ -162,56 +160,29 @@ locations[, n_posts_rank := data.table::frankv(n_posts, order = -1L, ties.method
 
 ### Spot time series ###############################################################
 
-# begin <- strptime('2016-01-01 06:00', format = '%Y-%m-%d %H:%M')
-# 
-# spot_data <- instagram_data[, .(location_name, location_id, 
-#                                 unified_time, likes_count)]
-# spot_data[, unified_time := as.POSIXct(ifelse(unified_time >= begin,
-#                                               unified_time,
-#                                               unified_time + 24 * 60 * 60),
-#                                        origin = '1970-01-01')]
-# spot_data[, unified_time := as.POSIXct(floor(as.numeric(unified_time) / 1800) *
-#                                          1800, origin = '1970-01-01')]
-# 
-# spot_data <- spot_data[, .(N_posts = .N, N_likes_median = median(likes_count)), 
-#                        by = .(location_id, location_name, unified_time)]
-# 
-# setkey(spot_data, location_id, unified_time)
-# 
-# series_grid <- data.table(expand.grid(location_id = 
-#                                            sort(unique(spot_data$location_id)),
-#                                          unified_time =
-#                                            sort(unique(spot_data$unified_time))),
-#                              key = c('location_id', 'unified_time'))
-# 
-# spot_data <- merge(series_grid, spot_data, all.x = TRUE)
-# spot_data[, location_name := unique(location_name[!is.na(location_name)]),
-#           by = location_id]
-# 
-# spot_data[is.na(N_posts), N_posts := 0]
-# spot_data[is.na(N_likes_median), N_likes_median := 0]
-# spot_data[, N_posts_total := sum(N_posts, na.rm = TRUE), by = location_id]
-# test <- spot_data[location_name == 'Forum Karlín',]
-# 
-# spot_data[, N_posts_smooth := predict(loess(N_posts ~ 
-#                                               as.numeric(unified_time), 
-#                                             span = 0.2)), 
-#           by = location_id]
-# 
-# spot_data[N_posts_smooth < 0, N_posts_smooth := 0]
-# 
-# spot_data[, N_likes_median_smooth := predict(loess(N_likes_median ~
-#                                                      as.numeric(unified_time), 
-#                                                    weights = N_posts,
-#                                                    span = 0.2)), 
-#           by = location_id]
-# 
-# spot_data[N_likes_median_smooth < 0, N_likes_median_smooth := 0]
-# 
-# spot_data <- merge(spot_data, 
-#                    data.table(locations[, .(location_id, lon_, lat_, n_posts_rank)], 
-#                               key = 'location_id'),
-#                    all.x = TRUE, sort = FALSE)
+time_data <- instagram_data[, .(unified_time, unified_date, is_freeday)]
+
+center <- strptime('2016-01-01 06:00', format = '%Y-%m-%d %H:%M')
+
+time_data[, total := factor('Total', levels = c('Total', 'Working day', 'Free day'))]
+time_data[, is_freeday := factor(is_freeday, levels = c(FALSE, TRUE), labels = c('Working day', 'Free day'))]
+
+time_data[, time_boundary := as.POSIXct(ifelse(unified_time <= center, 
+                                               unified_time + 24 * 60 * 60,
+                                               unified_time - 24 * 60 * 60), 
+                                        origin = '1970-01-01')]
+
+time_data <- data.table::melt(time_data, measure.vars = c('unified_time', 'time_boundary'), variable.name = 'Time_type', value = 'Time')
+
+time_data <- data.table::melt(time_data, measure.vars = c('total', 'is_freeday'), variable.name = 'Var', value = 'Group')
+
+time_data[, Group := factor(Group, levels = c('Total', 'Free day', 'Working day'))]
+
+time_data[, Weight := 1 / (length(unique(unified_date)) /
+                             length(unique(time_data$unified_date))), 
+          by = Group]
+
+
 
 ### Hashtags data ##################################################################
 
@@ -245,15 +216,5 @@ hashtags_freq[, freq_rank := frankv(N, order = -1, ties.method = 'min')]
 
 ### Save data ######################################################################
 
-save(hashtags, hashtags_freq, instagram_data, locations, file = './instagram_data_frames.rda')
-# spot_data, 
-
-
-### Analysis #######################################################################
-
-# get most popular locations
-# display them on a map
-
-# clustering methods
-
+save(hashtags, hashtags_freq, instagram_data, locations, time_data, file = './instagram_data_frames.rda')
 

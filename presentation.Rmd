@@ -12,9 +12,8 @@ knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
 htmlwidgets:::createWidgetId()
 
 # set English locale to print month names in English
-Sys.setlocale(category = "LC_TIME", locale="en_GB.UTF-8") 
+Sys.setlocale("LC_TIME", "C")
 Sys.setenv(TZ = 'UTC')
-
 # load libraries
 library(data.table)
 library(DescTools)
@@ -23,6 +22,8 @@ library(ggmap)
 library(ggplot2)
 library(ggrepel)
 library(gridExtra)
+library(kableExtra)
+library(knitr)
 library(plotly)
 library(webshot)
 library(wesanderson)
@@ -53,17 +54,21 @@ get_time_density <- function(time_data) {
 }
 
 move_time_peak <- function(time_data, new_begin = '2016-01-01 06:00') {
-  # move times before the begining a day later
-  new_time <- as.POSIXct(ifelse(as.numeric(time_data) <
-                                  as.numeric(as.POSIXct(new_begin)),
-                                time_data + 24 * 60 * 60, time_data), 
-                         origin = '1970-01-01')
-  # move times after the end a day earlier
-  new_time <- as.POSIXct(ifelse(as.numeric(time_data) >
-                                  as.POSIXct(new_begin) + 24 * 60 * 60,
-                                time_data - 24 * 60 * 60, time_data), 
-                         origin = '1970-01-01')
-  
+    # move times before the begining a day later
+    if (min(time_data, na.rm = TRUE) < as.numeric(as.POSIXct(new_begin))){
+    new_time <- as.POSIXct(ifelse(as.numeric(time_data) <
+                                    as.numeric(as.POSIXct(new_begin)),
+                                  time_data + 24 * 60 * 60, time_data), 
+                           origin = '1970-01-01')
+  } else if (max(time_data, na.rm = TRUE) > (as.POSIXct(new_begin) + 24 * 60 * 60)){
+    # move times after the end a day earlier
+    new_time <- as.POSIXct(ifelse(as.numeric(time_data) >
+                                    as.POSIXct(new_begin) + 24 * 60 * 60,
+                                  time_data - 24 * 60 * 60, time_data), 
+                           origin = '1970-01-01')
+  } else {
+    new_time <-  time_data
+  }
   return(new_time)
 }
 
@@ -74,7 +79,7 @@ maxN <- function(x, N=2){
     warning('N greater than length(x).  Setting N=length(x)')
     N <- length(x)
   }
-  sort(x,partial=len-N+1)[len-N+1]
+  return(sort(x,partial=len-N+1)[len-N+1])
 }
 
 
@@ -99,33 +104,10 @@ The analysis focuses on the key places of interest **during the day**: which pla
 
 ## What are the times when Karlin lives on Instagram
 
-```{r density}
-
-time_data <- instagram_data[, .(unified_time, unified_date, is_freeday)]
-
-center <- strptime('2016-01-01 06:00', format = '%Y-%m-%d %H:%M')
-
-time_data[, total := factor('Total', levels = c('Total', 'Working day', 'Free day'))]
-time_data[, is_freeday := factor(is_freeday, levels = c(FALSE, TRUE), labels = c('Working day', 'Free day'))]
-
-time_data[, time_boundary := as.POSIXct(ifelse(unified_time <= center, 
-                                               unified_time + 24 * 60 * 60,
-                                               unified_time - 24 * 60 * 60), 
-                                        origin = '1970-01-01')]
-
-time_data <- data.table::melt(time_data, measure.vars = c('unified_time', 'time_boundary'), variable.name = 'Time_type', value = 'Time')
-
-time_data <- data.table::melt(time_data, measure.vars = c('total', 'is_freeday'), variable.name = 'Var', value = 'Group')
-
-time_data[, Group := factor(Group, levels = c('Total', 'Free day', 'Working day'))]
-
-time_data[, Weight := 1 / (length(unique(unified_date)) /
-                             length(unique(time_data$unified_date))), 
-          by = Group]
-
+```{r time}
 
 p <- ggplot(time_data, aes(Time, colour = Group))
-p <- p + geom_freqpoly(aes(weight = Weight), bins = 30) 
+p <- p + geom_freqpoly(aes(weight = Weight), bins = 30, size = 1.5) 
 p <- p + scale_x_datetime(labels = scales::date_format("%H:%M", tz = 'UTC'), 
                           limits = as.POSIXct(c(0, 24 * 60 * 60), 
                                               origin = strftime('2015-12-31 18:00',
@@ -146,7 +128,7 @@ p <- p + theme(legend.title=element_blank(),
                axis.title.y=element_blank(),
                axis.text.y=element_blank(),
                axis.ticks.y=element_blank(),
-               text = element_text(family = 'Lato', colour = 'grey')) 
+               text = element_text(family = 'Lato', colour = 'darkgrey')) 
 
 
 
@@ -170,7 +152,7 @@ style(ggplotly(p, tooltip = 'colour'),
 
 ## What are the key spots?
 
-```{r spots, message = FALSE, fig.width = 8}
+```{r spots, message = FALSE}
 # load map
 karlin_map <- get_map(location = c(lon = median(instagram_data$longitude), 
                                    lat = median(instagram_data$latitude)), 
@@ -190,7 +172,7 @@ subsample <- locations[n_posts_rank <= top_n,]
 
 # build the ggmap plot
 # load the map
-map <- ggmap(karlin_map, extent = "panel", darken = c(0.3, colours[1]))
+map <- ggmap(karlin_map, extent = "panel", darken = c(0.1, colours[1]))
 # add points
 map <- map + geom_point(aes(x = lon_, y = lat_,
                             colour = as.numeric(time_peak), 
@@ -231,13 +213,26 @@ map <- map + theme(plot.title = element_text(size = 24),
 ggplotly(map, tooltips = 'label')
 
 ```
-
+<script src="https://code.jquery.com/jquery-1.12.0.min.js"></script>
+<script>
+  (function() {
+    if (window.jQuery) {
+      $('.plotly').hide();
+       window.jQuery(document).on('slideleave', function(e) {
+         window.jQuery(e.target).find('.plotly').hide();
+      });
+       window.jQuery(document).on('slideenter', function(e) {
+         window.jQuery(e.target).find('.plotly').show();      
+      });
+    }
+  })();
+</script>
 
 
 ## Top`r top_n` hashtags used
 
 
-```{r hashtags, message = FALSE, fig.width = 8}
+```{r hashtags, message = FALSE}
 
 wc <- ggplot(aes(x = as.numeric(time_peak), y = 1, size = N, label = hashtag, 
                  colour = as.numeric(time_peak)), 
@@ -269,12 +264,13 @@ wc
 
 
 ```
-<font size = '15'>hashtag minimum frequency: <b>`r unique(hashtags_freq[freq_rank == top_n, N])`</b></font>
+<br>
+<font size = '2'>hashtag minimum frequency: <b>`r unique(hashtags_freq[freq_rank == top_n, N])`</b></font>
 
 
 ## Hashtags are used at specific spots
 
-```{r corresp, message = FALSE, fig.width = 8}
+```{r corresp, message = FALSE}
 
 # get data for the hashtags_tab
 ht_tab <- hashtags[location_id %in% locations[n_posts_rank <= top_n, location_id] &
@@ -330,29 +326,45 @@ p2 <- plot_ly(ht_coords[facet == 2], x = ~`Dim 1`, y = ~`Dim 2`,
 p <- subplot(p1, p2, widths = c(0.75, 0.25))
 p
 ```
+<script src="https://code.jquery.com/jquery-1.12.0.min.js"></script>
+<script>
+  (function() {
+    if (window.jQuery) {
+      $('.plotly').hide();
+       window.jQuery(document).on('slideleave', function(e) {
+         window.jQuery(e.target).find('.plotly').hide();
+      });
+       window.jQuery(document).on('slideenter', function(e) {
+         window.jQuery(e.target).find('.plotly').show();      
+      });
+    }
+  })();
+</script>
 
 
 ## Clustering
 
-The corespondence analysis results indicate three clusters: 
-1. **party**, 
-2. **food**, 
-3. **beauty**.
+The corespondence analysis results indicate three clusters: <br>
+1. **party**, <br>
+2. **food**, <br>
+3. **beauty**.<br>
 
 The **K-means clustering** is performed here (using the `factoextra` library). The locations with spots having at least `r min_n_location` are selected.
 
-The following variables are used:
-- hashtag profile of each spot
-- peak time data on free day and at the weekend
-- fraction of free day and working day posts
+The following variables are used:<br>
+- hashtag profile of each spot<br>
+- peak time data on free day and at the weekend<br>
+- fraction of free day and working day posts<br>
 - number of likes per post
 
 
-```{r cluster_data, message = FALSE, fig.width = 8}
+```{r cluster_data, message = FALSE}
 
 # get data for clustering
 locations_cluster <- locations[n_posts >= min_n_location, 
-                               .(location_id, location_name, time_peak,
+                               .(location_id, location_name, 
+                                 time_peak = move_time_peak(
+                                   time_peak, '2016-01-01 06:00'),
                                  time_peak_freeday = move_time_peak(
                                    time_peak_freeday, '2016-01-01 06:00'),
                                  time_peak_workday = move_time_peak(
@@ -427,13 +439,13 @@ locations_cluster <- data.table::dcast(locations_cluster,
 ## Clustering tree
 
 
-```{r hcluster, message = FALSE, fig.width = 8}
+```{r hcluster, message = FALSE}
 clusters <- hclust(dist(locations_cluster_scaled[,
                                                  !c('location_id',
                                                     'location_name',
                                                     'n_posts'),
                                           with = FALSE]),
-                       method = 'ward')
+                       method = 'ward.D')
 plot(clusters, xlab = '')
 
 cut_h <- c(40, 50)
@@ -443,60 +455,85 @@ cut_h <- c(40, 50)
 
 ## Clustering results
 
-- We can see cca 4 groups in the dendrogram (with some individual cases leaving on higher height)
-- We cut the dendrogram on the **height = `cut_h`** and all the **other** groups recode together
+- We can see cca 4 groups in the dendrogram
+- We cut the dendrogram on the **height = `r paste0(cut_h, collapse = ' and ')`** and recode the group **on the right** together
+<br>
 
-```{r cluster_results, message = FALSE, fig.width = 8}
+```{r cluster_results, message = FALSE, results = 'asis'}
+
+### Get cluster variable #########################################################
+# matrix of assignment to clusters
 assign_cl <- cutree(clusters, h = cut_h)
+# table of counts
 assign_tab <- data.table(table(assign_cl[, 1], assign_cl[, 2]))
+# select only positive counts
 assign_tab <- assign_tab[assign_tab$N > 0,]
+# if count is 10+, get the lower height version, 
+# otherwise get the higher weight
 assign_tab[, cluster := paste0('Cluster ', ifelse(N >= 10, V1, V2))]
-assign_tab <- assign_tab[, .(c40 = as.numeric(V1), 
-                             c50 = as.numeric(V2), 
+assign_tab <- assign_tab[, .(c01 = as.numeric(V1), 
+                             c02 = as.numeric(V2), 
                              cluster)]
 
-locations_cluster[, c40 := assign_cl[, '40']]
-locations_cluster[, c50 := assign_cl[, '50']]
-setkey(locations_cluster, c40, c50)
-setkey(assign_tab, c40, c50)
+# add both cluster assignments to the data
+locations_cluster[, c01 := assign_cl[, 1]]
+locations_cluster[, c02 := assign_cl[, 2]]
+
+# merge the cluster variable
+setkey(locations_cluster, c01, c02)
+setkey(assign_tab, c01, c02)
 locations_cluster <- merge(locations_cluster, assign_tab, all.x = TRUE, 
                            sort = FALSE)
 
+# merge the cluster variable to the _scaled data
 setkey(locations_cluster, location_id)
 setkey(locations_cluster_scaled, location_id)
 
 locations_cluster_scaled <- merge(locations_cluster_scaled, 
                                   locations_cluster[, .(location_id, cluster)])
 
-cluster_results <- data.table::melt(locations_cluster_scaled[, !c('c40', 'c50'),
+### Print out the results ########################################################
+
+# long format
+cluster_results <- data.table::melt(locations_cluster_scaled[, !c('c01', 'c02'),
                                                              with = FALSE], 
                                     id.vars = c('location_id', 'location_name',
                                                 'cluster'))
-
+# aggregate by cluster * variable
 cluster_results <- cluster_results[, .(.N, value = mean(value)), 
                                    by = .(cluster, variable)]
 
+# add `is_hashtag` variable
 cluster_results[, is_hashtag := grepl('^#', variable)]
 
+# get top5 hashtags
 ht_top5 <- cluster_results[is_hashtag == TRUE, 
                           .(ht_top5 = paste0(variable[value >= maxN(value, 5)], 
                                              collapse = ' ')), 
                           by = .(cluster)]
 
+# summarise the results
 cl_sum <- locations_cluster[, lapply(.SD, mean),
                             by = cluster,
                             .SDcols = c('time_peak', 'f_posts_freeday',
                                         'n_likes_per_post')]
 
-cl_sum[, `Peak time` := as.POSIXct(time_peak, origin = '1970-01-01')]
-cl_sum[, `% of posts on a free day` := paste0(round(f_posts_freeday * 100, 1),
+cl_sum[, `Cluster` := cluster]
+
+cl_sum[, `Peak time` := format(as.POSIXct(time_peak, origin = '1970-01-01'),
+                               '%H:%M')]
+cl_sum[, `% free day` := paste0(round(f_posts_freeday * 100, 1),
                                               '%')]
-cl_sum[, `N likes per post` := round(n_likes_per_post, 1)]
-cl_sum[, `Top 5 hashtags` := ht_top5$ht_top5]
-cl_sum[, c('time_peak', 'f_posts_freeday', 'n_likes_per_post') := NULL, 
+cl_sum[, `Likes/post` := round(n_likes_per_post, 1)]
+cl_sum[, `Top5 hashtags` := ht_top5$ht_top5]
+cl_sum[, c('cluster', 'time_peak', 'f_posts_freeday', 'n_likes_per_post') := NULL, 
        with = FALSE]
 
-cl_sum
+kable(cl_sum, format = 'html', 
+      caption = 'Hierarchical clustering results',
+      align = c('c', 'c', 'c', 'c', 'l')) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed",
+                                      "responsive"), font_size = 20)
 
 
 ```
@@ -504,9 +541,7 @@ cl_sum
 
 ## Clusters on the map
 
-```{r clusters_map, message = FALSE, fig.width = 8}
-
-
+```{r clusters_map, message = FALSE}
 
 # get subsample of locations data
 subsample <- merge(data.table(locations[, .(location_id, location_name, 
@@ -517,7 +552,7 @@ subsample <- merge(data.table(locations[, .(location_id, location_name,
 
 # build the ggmap plot
 # load the map
-map <- ggmap(karlin_map, extent = "panel", darken = c(0.3, colours[1]))
+map <- ggmap(karlin_map, extent = "panel", darken = c(0.1, colours[1]))
 # add points
 map <- map + geom_point(aes(x = lon_, y = lat_,
                             colour = cluster, 
@@ -553,4 +588,19 @@ map <- map + theme(plot.title = element_text(size = 24),
 ggplotly(map, tooltips = 'label')
 
 ```
+<script src="https://code.jquery.com/jquery-1.12.0.min.js"></script>
+<script>
+  (function() {
+    if (window.jQuery) {
+      $('.plotly').hide();
+       window.jQuery(document).on('slideleave', function(e) {
+         window.jQuery(e.target).find('.plotly').hide();
+      });
+       window.jQuery(document).on('slideenter', function(e) {
+         window.jQuery(e.target).find('.plotly').show();      
+      });
+    }
+  })();
+</script>
 
+# Thank you!
