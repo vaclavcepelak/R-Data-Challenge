@@ -8,13 +8,15 @@ cat('\014')
 library(data.table)
 library(lubridate)
 library(stringr)
-library(chron)
+# library(chron)
 library(geosphere)
 
 
+Sys.setlocale(category = "LC_TIME", locale="en_GB.UTF-8") 
+Sys.setenv(TZ = 'UTC')
+
 
 # Parameters
-HOLIDAYS <- as.Date(c('2016-01-01', '2016-03-25', '2016-03-28'))
 ACCEPTABLE_DISTANCE <- 100
 
 # Window
@@ -24,22 +26,87 @@ UR_lat <- 50.10058
 UR_lon <- 14.46716
 
 
+# for analytical purposes, the day begins at a specified time
+# this function creates a unified time column setting all the dates to minimum
+
+unify_time <- function(data, 
+                       day_begin_time = '18:00', # time when analytical day begins
+                       day_before = TRUE, # should the beginning be set to the day before?
+                       time_column = 'created_time', # variable names...
+                       unified_time_column = 'unified_time',
+                       unified_date_column = 'unified_date',
+                       daytype_column = 'is_freeday',
+                       holidays = as.Date(c('2016-01-01', '2016-03-25', '2016-03-28'))) {
+  # get minimum date
+  day0 <- as.POSIXct(as.Date(min(data[[time_column]])))
+  # compute the unified time
+  unified_time <- as.POSIXct(data[[time_column]]) - as.POSIXct(as.Date(data[[time_column]])) + day0
+  
+  # extract the time of the beginning
+  time0 <- as.POSIXct(strptime(day_begin_time, format = '%H:%M'))
+  time0 <- time0 - as.POSIXct(as.Date(time0) + as.numeric(day_before)) + day0
+  
+  if (day_before == TRUE) {
+    unified_time <- ifelse(unified_time >= time0 + 24 * 60 * 60,
+                           unified_time - 24 * 60 * 60,
+                           unified_time)
+  } else {
+    unified_time <- ifelse(unified_time <= time0,
+                           unified_time + 24 * 60 * 60,
+                           unified_time)
+  }
+  
+  data[, (unified_time_column) := as.POSIXct(unified_time, origin = '1970-01-01')]
+  
+  # compute unified date
+  data[, (unified_date_column) := as.Date(data[[time_column]])]
+  
+  data[, (unified_date_column) := as.Date(ifelse(as.Date(data[[unified_time_column]]) == as.Date(min(data[[time_column]])), # if no change in unified time date occured
+                                                 data[[unified_date_column]], # get the original value
+                                                 data[[unified_date_column]] + 2 * day_before - 1), origin = '1970-01-01')] # otherwise add or substract 1 day depending on whether it is day before or not
+
+  # get business days using the bizdays library
+  # create calendar
+  calendar <- bizdays::create.calendar('CZ', 
+                                       holidays = holidays, # add holidays in the timespan
+                                       weekdays = c("saturday", "sunday"),
+                                       start.date = as.Date(min(data[[time_column]])) - 1, 
+                                       end.date = as.Date(max(data[[time_column]])) + 1)
+  
+  # use is.bizday function to detect free days
+  data[, (daytype_column) := !bizdays::is.bizday(data[[unified_date_column]], calendar)]
+  
+  return(data)
+}
+
 # Helper function
 
-get_max_density <- function(time_data) {
+get_max_density <- function(time_data, 
+                            center = strptime('2016-01-01 06:00', format = '%Y-%m-%d %H:%M')) {
+  
+  if (length(time_data) == 0) return(NA)
+  if (length(time_data) == 1) return(time_data)
+  
   # compute the density
   # timespan is expanded because density function is low close to midnight from both sides
   # the previous periods need to be added so that the density at midnight is computed correctly
-  d <- density(c(time_data, time_data[time_data > 0.5] - 1, time_data[time_data <= 0.5] + 1))
+  
+  
+  d <- density(as.numeric(c(time_data, time_data[time_data > center] - 24 * 60 * 60, time_data[time_data <= center] + 24 * 60 * 60)))
   # return the time with maximum density
-  # hot fix: for multimodal distributions the minimum value is selected
+  # for multimodal distributions the minimum value is selected
   max_d <- min(d$x[d$y == max(d$y, na.rm = TRUE)], na.rm = TRUE)
   
   # if max_d is out of the [0, 1] interval, add or substract 1
-  if (max_d < 0) max_d <- max_d + 1 else if (max_d > 1) max_d <- max_d - 1
+  if (max_d < (center - 12 * 60 * 60)) {
+    max_d <- max_d + 24 * 60 * 60
+  } else if (max_d > (center + 12 * 60 * 60)) {
+    max_d <- max_d - 24 * 60 * 60
+  }
   
-  return(times(max_d))
+  return(as.POSIXct(max_d, origin = '1970-01-01'))
 }
+
 
 
 
@@ -47,21 +114,10 @@ get_max_density <- function(time_data) {
 
 instagram_data <- fread('./Karlin_Geo_Analysis/instagram_data.csv')
 
-instagram_data[, created_time := lubridate::dmy_hm(created_time)]
-instagram_data[, weekday := lubridate::wday(created_time, label = TRUE, week_start = 1)]
-instagram_data[, time := chron::times(hour(created_time) / 24 + minute(created_time) / 24 / 60)]
+instagram_data[, created_time := strptime(created_time, format = '%d/%m/%Y %H:%M')]
+instagram_data[, weekday := ifelse(data.table::wday(created_time) - 1 == 0, 7, data.table::wday(created_time) - 1)]
 
-# get business days using the bizdays library
-# create calendar
-calendar <- bizdays::create.calendar('CZ', 
-                                     holidays = HOLIDAYS, # add holidays in the timespan
-                                     weekdays = c("saturday", "sunday"),
-                                     start.date = as.Date('2016-01-01'), 
-                                     end.date = as.Date('2016-03-31'))
-
-# use is.bizday function
-instagram_data[, free_day := !bizdays::is.bizday(instagram_data$created_time, calendar)]
-instagram_data[, free_day_before := !bizdays::is.bizday(as.Date(instagram_data$created_time) + 1, calendar)]
+instagram_data <- unify_time(instagram_data)
 
 
 ### Clean data #####################################################################
@@ -79,29 +135,118 @@ instagram_data <- instagram_data[dist_from_place <= ACCEPTABLE_DISTANCE]
 # remove the data outside the selected window
 instagram_data <- instagram_data[longitude >= LL_lon & latitude >= LL_lat & longitude <= UR_lon & latitude <= UR_lat, ]
 
+# remove posts with missing id and duplicated
+instagram_data <- instagram_data[id != '']
+instagram_data <- unique(instagram_data)
+
+ 
+
 ### Locations data #################################################################
 
+# debugonce(get_max_density)
+
 locations <- instagram_data[, 
-                            .(lon_median = median(longitude),
-                              lat_median = median(latitude),
-                              time_peak = get_max_density(time),
+                            .(lon_ = median(longitude),
+                              lat_ = median(latitude),
+                              time_peak = get_max_density(unified_time),
+                              time_peak_workday = as.POSIXct(get_max_density(unified_time[is_freeday == FALSE])), # as.double fixes the issues with wrong type of column for NAs
+                              time_peak_freeday = as.POSIXct(get_max_density(unified_time[is_freeday == TRUE])),
                               n_posts = .N,
+                              f_posts_freeday = mean(is_freeday),
                               n_users = length(unique(user_id)),
                               n_likes_total = sum(likes_count),
                               n_comments_total = sum(comments_count)),
-                            by = .(location_id, location_name)]
+                            by = .(location_id, location_name)][order(-n_posts),]
 
+locations[, n_posts_rank := data.table::frankv(n_posts, order = -1L, ties.method = 'min')]
 
+### Spot time series ###############################################################
+
+# begin <- strptime('2016-01-01 06:00', format = '%Y-%m-%d %H:%M')
+# 
+# spot_data <- instagram_data[, .(location_name, location_id, 
+#                                 unified_time, likes_count)]
+# spot_data[, unified_time := as.POSIXct(ifelse(unified_time >= begin,
+#                                               unified_time,
+#                                               unified_time + 24 * 60 * 60),
+#                                        origin = '1970-01-01')]
+# spot_data[, unified_time := as.POSIXct(floor(as.numeric(unified_time) / 1800) *
+#                                          1800, origin = '1970-01-01')]
+# 
+# spot_data <- spot_data[, .(N_posts = .N, N_likes_median = median(likes_count)), 
+#                        by = .(location_id, location_name, unified_time)]
+# 
+# setkey(spot_data, location_id, unified_time)
+# 
+# series_grid <- data.table(expand.grid(location_id = 
+#                                            sort(unique(spot_data$location_id)),
+#                                          unified_time =
+#                                            sort(unique(spot_data$unified_time))),
+#                              key = c('location_id', 'unified_time'))
+# 
+# spot_data <- merge(series_grid, spot_data, all.x = TRUE)
+# spot_data[, location_name := unique(location_name[!is.na(location_name)]),
+#           by = location_id]
+# 
+# spot_data[is.na(N_posts), N_posts := 0]
+# spot_data[is.na(N_likes_median), N_likes_median := 0]
+# spot_data[, N_posts_total := sum(N_posts, na.rm = TRUE), by = location_id]
+# test <- spot_data[location_name == 'Forum Karlín',]
+# 
+# spot_data[, N_posts_smooth := predict(loess(N_posts ~ 
+#                                               as.numeric(unified_time), 
+#                                             span = 0.2)), 
+#           by = location_id]
+# 
+# spot_data[N_posts_smooth < 0, N_posts_smooth := 0]
+# 
+# spot_data[, N_likes_median_smooth := predict(loess(N_likes_median ~
+#                                                      as.numeric(unified_time), 
+#                                                    weights = N_posts,
+#                                                    span = 0.2)), 
+#           by = location_id]
+# 
+# spot_data[N_likes_median_smooth < 0, N_likes_median_smooth := 0]
+# 
+# spot_data <- merge(spot_data, 
+#                    data.table(locations[, .(location_id, lon_, lat_, n_posts_rank)], 
+#                               key = 'location_id'),
+#                    all.x = TRUE, sort = FALSE)
 
 ### Hashtags data ##################################################################
 
-hashtags <- setNames(str_extract_all(instagram_data$caption, '#\\w+'), instagram_data$id)
+hashtags <- setNames(str_extract_all(tolower(instagram_data$caption), '#\\w+'), instagram_data$id)
 hashtags <- setnames(data.table(stack(hashtags)), c('hashtag', 'id'))
-hashtags[, N := .N, by = .(hashtag)]
-
-hashtags_freq <- unique(hashtags[order(-N), .(hashtag, N)])
+hashtags[, total_N_occurences := .N, by = .(hashtag)]
 
 
+
+setkey(hashtags, id)
+setkey(instagram_data, id)
+
+hashtags <- merge(hashtags, 
+                  instagram_data[, .(id, unified_time, location_id, location_name)])
+
+# move transform peak unified time to begin at 06:00
+hashtags[, unified_time:= as.POSIXct(ifelse(as.numeric(unified_time) <= 
+                                              as.numeric(
+                                                as.POSIXct('2016-01-01 06:00')), 
+                                            unified_time + 24 * 60 * 60,
+                                            unified_time), origin = '1970-01-01')]
+
+hashtags_freq <- hashtags[!is.na(hashtag),
+                          .(N = .N,
+                            time_peak = get_max_density(unified_time,
+                                                        center = as.POSIXct('2016-01-01 18:00'))),
+                          by = .(hashtag)][order(-N)]
+
+hashtags_freq[, freq_rank := frankv(N, order = -1, ties.method = 'min')]
+
+
+### Save data ######################################################################
+
+save(hashtags, hashtags_freq, instagram_data, locations, file = './instagram_data_frames.rda')
+# spot_data, 
 
 
 ### Analysis #######################################################################
@@ -111,45 +256,4 @@ hashtags_freq <- unique(hashtags[order(-N), .(hashtag, N)])
 
 # clustering methods
 
-
-
-
-
-
-
-
-karlin_map <- get_map(location = c(lon = median(instagram_data$longitude), lat = median(instagram_data$latitude)), maptype = "terrain", source = 'google', zoom = 15)
-
-attr(karlin_map, 'bb')
-
-map <- ggmap(karlin_map, extent = "device") + 
-  geom_point(aes(x = longitude, y = latitude), colour = "red", alpha = 0.1, size = 2, data = instagram_data)
-
-map
-
-qs <- c(0, 0.001, 0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99, 0.999, 0.9999)
-quantile(instagram_data$longitude, qs)
-quantile(instagram_data$latitude, qs)
-
-map1 <- plot_mapbox(dat, x = ~long, y = ~lat) %>% 
-  add_paths(size = I(2)) %>%
-  add_segments(x = -100, xend = -50, y = 50, 75) %>%
-  layout(mapbox = list(
-    zoom = 0,
-    center = list(lat = ~median(lat), lon = ~median(long))
-  ))
-
-
-# hist(as.numeric(instagram_data$time))
-# a <- density(as.numeric(instagram_data$time))
-# plot(a)
-
-# approx(a$x,a$y,xout = as.numeric(instagram_data$time[1]))
-
-
-
-
-
-
-library(ggmap)
 

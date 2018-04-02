@@ -1,0 +1,556 @@
+---
+title: "R Data Challenge"
+author: "Václav Čepelák"
+date: "April 2, 2018"
+output: 
+  ioslides_presentation:
+    widescreen: true
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+htmlwidgets:::createWidgetId()
+
+# set English locale to print month names in English
+Sys.setlocale(category = "LC_TIME", locale="en_GB.UTF-8") 
+Sys.setenv(TZ = 'UTC')
+
+# load libraries
+library(data.table)
+library(DescTools)
+library(FactoMineR)
+library(ggmap)
+library(ggplot2)
+library(ggrepel)
+library(gridExtra)
+library(plotly)
+library(webshot)
+library(wesanderson)
+# extrafont::font_import(pattern = 'Lato', prompt = FALSE)
+
+# number of spots and hashtags to show
+top_n <- 25
+# minimum N used for clustering
+min_n_location <- 20
+min_n_hashtag <- 30
+
+# load data
+load('./instagram_data_frames.rda')
+
+colours <- wes_palette('FantasticFox')
+
+# helper function to compute time density
+get_time_density <- function(time_data) {
+  # compute the density
+  # timespan is expanded because density function is low close to midnight from both sides
+  # the previous periods need to be added so that the density at midnight is computed correctly
+  d <- density(c(time_data, time_data[time_data > 0.5] - 1, time_data[time_data <= 0.5] + 1))
+  
+  # get values for [0, 1] interval 
+  d0 <- data.table(x = d$x, y = d$y)
+  
+  return(d0[x >= 0 & x <= 1,])
+}
+
+move_time_peak <- function(time_data, new_begin = '2016-01-01 06:00') {
+  # move times before the begining a day later
+  new_time <- as.POSIXct(ifelse(as.numeric(time_data) <
+                                  as.numeric(as.POSIXct(new_begin)),
+                                time_data + 24 * 60 * 60, time_data), 
+                         origin = '1970-01-01')
+  # move times after the end a day earlier
+  new_time <- as.POSIXct(ifelse(as.numeric(time_data) >
+                                  as.POSIXct(new_begin) + 24 * 60 * 60,
+                                time_data - 24 * 60 * 60, time_data), 
+                         origin = '1970-01-01')
+  
+  return(new_time)
+}
+
+
+maxN <- function(x, N=2){
+  len <- length(x)
+  if(N>len){
+    warning('N greater than length(x).  Setting N=length(x)')
+    N <- length(x)
+  }
+  sort(x,partial=len-N+1)[len-N+1]
+}
+
+
+
+```
+
+
+## About the analysis
+
+Prepared for [KPMG R Data Challenge](https://github.com/KPMG-CZ/R-Data-Challenge).
+
+The analysis focuses on the key places of interest **during the day**: which places are alive earlier and which ones later in the evening
+
+<br>
+<b>Which data were used?</b>
+
+- Instagram posts received via the [Instagram API](https://www.instagram.com/developer/)
+- Location: **Prague - Karlin**  (and surrounding areas)
+- Period: from **`r format(min(instagram_data$created_time), '%b %d, %Y')`** to **`r format(max(instagram_data$created_time), '%b %d, %Y')`**
+- Number of rows after data cleaning: **`r nrow(instagram_data)`**
+
+
+## What are the times when Karlin lives on Instagram
+
+```{r density}
+
+time_data <- instagram_data[, .(unified_time, unified_date, is_freeday)]
+
+center <- strptime('2016-01-01 06:00', format = '%Y-%m-%d %H:%M')
+
+time_data[, total := factor('Total', levels = c('Total', 'Working day', 'Free day'))]
+time_data[, is_freeday := factor(is_freeday, levels = c(FALSE, TRUE), labels = c('Working day', 'Free day'))]
+
+time_data[, time_boundary := as.POSIXct(ifelse(unified_time <= center, 
+                                               unified_time + 24 * 60 * 60,
+                                               unified_time - 24 * 60 * 60), 
+                                        origin = '1970-01-01')]
+
+time_data <- data.table::melt(time_data, measure.vars = c('unified_time', 'time_boundary'), variable.name = 'Time_type', value = 'Time')
+
+time_data <- data.table::melt(time_data, measure.vars = c('total', 'is_freeday'), variable.name = 'Var', value = 'Group')
+
+time_data[, Group := factor(Group, levels = c('Total', 'Free day', 'Working day'))]
+
+time_data[, Weight := 1 / (length(unique(unified_date)) /
+                             length(unique(time_data$unified_date))), 
+          by = Group]
+
+
+p <- ggplot(time_data, aes(Time, colour = Group))
+p <- p + geom_freqpoly(aes(weight = Weight), bins = 30) 
+p <- p + scale_x_datetime(labels = scales::date_format("%H:%M", tz = 'UTC'), 
+                          limits = as.POSIXct(c(0, 24 * 60 * 60), 
+                                              origin = strftime('2015-12-31 18:00',
+                                                                format = 
+                                                                  '%Y-%m-%d %H:%M',
+                                                                tz = 'UTC')),
+                          breaks = as.POSIXct(seq(0, 1, length.out = 13) * 
+                                                24 * 60 * 60, 
+                                              origin = strftime('2015-12-31 18:00',
+                                                                format = 
+                                                                  '%Y-%m-%d %H:%M')
+                                              ))
+
+p <- p + scale_colour_manual(values = colours)
+
+p <- p + theme(legend.title=element_blank(),
+               legend.text=element_text(size = 12),
+               axis.title.y=element_blank(),
+               axis.text.y=element_blank(),
+               axis.ticks.y=element_blank(),
+               text = element_text(family = 'Lato', colour = 'grey')) 
+
+
+
+style(ggplotly(p, tooltip = 'colour'), 
+      visible = "legendonly", traces = c(1))
+```
+<script src="https://code.jquery.com/jquery-1.12.0.min.js"></script>
+<script>
+  (function() {
+    if (window.jQuery) {
+      $('.plotly').hide();
+       window.jQuery(document).on('slideleave', function(e) {
+         window.jQuery(e.target).find('.plotly').hide();
+      });
+       window.jQuery(document).on('slideenter', function(e) {
+         window.jQuery(e.target).find('.plotly').show();      
+      });
+    }
+  })();
+</script>
+
+## What are the key spots?
+
+```{r spots, message = FALSE, fig.width = 8}
+# load map
+karlin_map <- get_map(location = c(lon = median(instagram_data$longitude), 
+                                   lat = median(instagram_data$latitude)), 
+                      maptype = "roadmap", source = 'google', zoom = 15)
+
+# move transform peak unified time to begin at 06:00
+locations[, time_peak:= move_time_peak(time_peak, '2016-01-01 06:00')]
+
+# breaks for peak_time variable used in the plot
+time_breaks <- as.POSIXct(c('2016-01-01 08:00',
+                            '2016-01-01 14:00',
+                            '2016-01-01 20:00',
+                            '2016-01-02 02:00'))
+
+# get subsample of locations data
+subsample <- locations[n_posts_rank <= top_n,]
+
+# build the ggmap plot
+# load the map
+map <- ggmap(karlin_map, extent = "panel", darken = c(0.3, colours[1]))
+# add points
+map <- map + geom_point(aes(x = lon_, y = lat_,
+                            colour = as.numeric(time_peak), 
+                            size = n_posts,
+                            label = location_name), 
+                        data = subsample)
+
+# add legend for point size representing n of posts
+map <- map + scale_size_continuous(limits = c(0, max(subsample$n_posts)), 
+                                   range = c(0, 10),
+                                   breaks = c(100, 500, 1000),
+                                   name = "N posts")
+
+# add legend for colour representing the peak time
+map <- map + scale_colour_gradientn(limits =
+                                      range(as.numeric(locations$time_peak)),
+                                    breaks = as.numeric(time_breaks),
+                                    labels = format(time_breaks, '%H:%M'),
+                                    range(0, 5), colors = colours[1:4],
+                                    guide = guide_colourbar(),
+                                    name = 'Peak time') 
+# add title
+map <- map + ggtitle(paste0('Top', top_n, ' spots in Karlin'))
+
+# remove axes
+map <- map + theme(plot.title = element_text(size = 24),
+                   axis.title.y = element_blank(),
+                   axis.text.y = element_blank(),
+                   axis.ticks.y = element_blank(),
+                   axis.title.x = element_blank(),
+                   axis.text.x = element_blank(),
+                   axis.ticks.x = element_blank(),
+                   text = element_text(family = 'Lato', 
+                                       colour = rgb(81, 81, 81, max = 255)))
+
+
+
+ggplotly(map, tooltips = 'label')
+
+```
+
+
+
+## Top`r top_n` hashtags used
+
+
+```{r hashtags, message = FALSE, fig.width = 8}
+
+wc <- ggplot(aes(x = as.numeric(time_peak), y = 1, size = N, label = hashtag, 
+                 colour = as.numeric(time_peak)), 
+             data = hashtags_freq[freq_rank <= top_n])
+wc <- wc + geom_text_repel(segment.size = 0, 
+                           segment.color = NA,
+                           force = 2)
+wc <- wc + scale_size(range = c(4, 15), guide = FALSE)
+wc <- wc + scale_colour_gradientn(limits =
+                                      range(as.numeric(hashtags_freq$time_peak)),
+                                  breaks = as.numeric(time_breaks),
+                                  labels = format(time_breaks, '%H:%M'),
+                                  range(0, 5), colors = colours[1:4],
+                                  guide = guide_colourbar(barwidth = 15,
+                                                          title.position = 'top',
+                                                          label_theme = 
+                                                            element_text(
+                                                              colour = 
+                                                                rgb(81, 81, 81, 
+                                                                    max = 255)
+                                                            )),
+                                  name = 'Peak time') 
+wc <- wc + scale_y_continuous(breaks = NULL) + scale_x_continuous(breaks = NULL)
+wc <- wc + labs(x = '', y = '')
+wc <- wc + theme_classic(base_family = 'Lato') + 
+  theme(legend.position = 'bottom', legend.direction = 'horizontal')
+wc
+
+
+
+```
+<font size = '15'>hashtag minimum frequency: <b>`r unique(hashtags_freq[freq_rank == top_n, N])`</b></font>
+
+
+## Hashtags are used at specific spots
+
+```{r corresp, message = FALSE, fig.width = 8}
+
+# get data for the hashtags_tab
+ht_tab <- hashtags[location_id %in% locations[n_posts_rank <= top_n, location_id] &
+                     hashtag %in% hashtags_freq[freq_rank <= top_n, hashtag],
+                   .(hashtag = factor(hashtag),
+                     location_name = factor(location_name))]
+
+ht_tab <- with(ht_tab, table(location_name, hashtag))
+
+# correspondence analysis
+ht_corresp <- CA(ht_tab, 2, graph = FALSE)
+
+# get CA coords
+ht_coords <- rbind(data.table(ht_corresp$row$coord,
+                              keep.rownames = TRUE)[, type := 'Spot'],
+                   data.table(ht_corresp$col$coord,
+                              keep.rownames = TRUE)[, type := 'Hashtag'])
+
+# split to 2 facets
+ht_coords[, facet := (`Dim 1` > 0) + 1]
+
+# create plots
+p1 <- plot_ly(ht_coords[facet == 1], x = ~`Dim 1`, y = ~`Dim 2`, 
+              type = 'scatter', mode = 'text', text = ~rn, 
+              textposition = 'middle',
+              color = ~type, colors = colours[c(3, 1)],
+              textfont = list(size = 12)) %>%
+  layout(title = '',
+         xaxis = list(title = '',
+                      zeroline = FALSE,
+                      tickfont = list(size = 9, color = 'grey'),
+                      range = c(-0.155, -0.10)),
+         yaxis = list(title = '',
+                      tickfont = list(size = 9, color = 'grey'),
+                      range = c(-1, 1.5)))
+
+p2 <- plot_ly(ht_coords[facet == 2], x = ~`Dim 1`, y = ~`Dim 2`, 
+              type = 'scatter', mode = 'text', text = ~rn, 
+              textposition = 'middle',
+              color = ~type, colors = colours[c(3, 1)],
+              textfont = list(size = 12)) %>%
+  layout(title = '',
+         xaxis = list(title = '',
+                      zeroline = FALSE, 
+                      tickfont = list(size = 9, color = 'grey'),
+                      range = c(7.15, 7.5)),
+         yaxis = list(title = '',
+                      showline = FALSE,
+                      showticklabels = FALSE,
+                      range = c(-1, 1.5)))
+
+
+p <- subplot(p1, p2, widths = c(0.75, 0.25))
+p
+```
+
+
+## Clustering
+
+The corespondence analysis results indicate three clusters: 
+1. **party**, 
+2. **food**, 
+3. **beauty**.
+
+The **K-means clustering** is performed here (using the `factoextra` library). The locations with spots having at least `r min_n_location` are selected.
+
+The following variables are used:
+- hashtag profile of each spot
+- peak time data on free day and at the weekend
+- fraction of free day and working day posts
+- number of likes per post
+
+
+```{r cluster_data, message = FALSE, fig.width = 8}
+
+# get data for clustering
+locations_cluster <- locations[n_posts >= min_n_location, 
+                               .(location_id, location_name, time_peak,
+                                 time_peak_freeday = move_time_peak(
+                                   time_peak_freeday, '2016-01-01 06:00'),
+                                 time_peak_workday = move_time_peak(
+                                   time_peak_workday, '2016-01-01 06:00'),
+                                 f_posts_freeday, n_posts,
+                                 n_likes_per_post = n_likes_total / n_posts)]
+
+setkey(locations_cluster, location_id)
+
+# aggregate hashtag data on location and hashtag
+
+ht_profile <- data.table(hashtags[!is.na(hashtag), 
+                                  .N, by =  .(location_id, location_name,
+                                              hashtag)],
+                         key = 'location_id')
+
+# (select those hashtags with minimum N)
+ht_profile[, total_N := sum(N), by = hashtag]
+ht_profile <- ht_profile[total_N >= min_n_hashtag]
+
+# compute relative number of occs of each hashtag per number of posts
+ht_profile <- merge(ht_profile, locations_cluster[, .(location_id, n_posts)])
+ht_profile[, value := N / n_posts]
+ht_profile <- ht_profile[location_id %in% unique(locations_cluster$location_id), 
+                         .(location_id, value, 
+                             variable = hashtag)]
+setkey(ht_profile, location_id, variable)
+
+# expand the data for 0 hashtags in location
+ht_profile_grid <- data.table(expand.grid(location_id =
+                                            unique(locations_cluster$location_id),
+                                          variable =
+                                            unique(ht_profile$variable)),
+                              key = c('location_id', 'variable'))
+
+ht_profile <- merge(ht_profile_grid, ht_profile, all.x = TRUE)
+# set values for 0 hashtags
+ht_profile[is.na(value), value := 0]
+# add location_name
+ht_profile <- merge(ht_profile, 
+                    data.table(locations_cluster[, .(location_id, location_name)],
+                               key = 'location_id'))
+
+# data to long format
+locations_cluster <- data.table::melt(locations_cluster,
+                                     id.vars = c('location_id', 'location_name'))
+
+locations_cluster <- rbind(locations_cluster, ht_profile)
+
+# replace all missing (there are few in the time_peak_freeday vars) 
+# with variable mean
+locations_cluster[, 
+                 value := ifelse(is.na(value), mean(value, na.rm = TRUE), value),
+                 by = variable]
+# scale values
+locations_cluster[, scaled_value := scale(value)[,1], by = variable]
+
+# df for clustering
+locations_cluster_scaled <- data.table::dcast(locations_cluster,
+                                              location_id + location_name ~
+                                                variable,
+                                              value.var = 'scaled_value')
+
+# df with original values
+locations_cluster <- data.table::dcast(locations_cluster,
+                                       location_id + location_name ~ variable,
+                                       value.var = 'value')
+
+```
+
+
+## Clustering tree
+
+
+```{r hcluster, message = FALSE, fig.width = 8}
+clusters <- hclust(dist(locations_cluster_scaled[,
+                                                 !c('location_id',
+                                                    'location_name',
+                                                    'n_posts'),
+                                          with = FALSE]),
+                       method = 'ward')
+plot(clusters, xlab = '')
+
+cut_h <- c(40, 50)
+
+```
+
+
+## Clustering results
+
+- We can see cca 4 groups in the dendrogram (with some individual cases leaving on higher height)
+- We cut the dendrogram on the **height = `cut_h`** and all the **other** groups recode together
+
+```{r cluster_results, message = FALSE, fig.width = 8}
+assign_cl <- cutree(clusters, h = cut_h)
+assign_tab <- data.table(table(assign_cl[, 1], assign_cl[, 2]))
+assign_tab <- assign_tab[assign_tab$N > 0,]
+assign_tab[, cluster := paste0('Cluster ', ifelse(N >= 10, V1, V2))]
+assign_tab <- assign_tab[, .(c40 = as.numeric(V1), 
+                             c50 = as.numeric(V2), 
+                             cluster)]
+
+locations_cluster[, c40 := assign_cl[, '40']]
+locations_cluster[, c50 := assign_cl[, '50']]
+setkey(locations_cluster, c40, c50)
+setkey(assign_tab, c40, c50)
+locations_cluster <- merge(locations_cluster, assign_tab, all.x = TRUE, 
+                           sort = FALSE)
+
+setkey(locations_cluster, location_id)
+setkey(locations_cluster_scaled, location_id)
+
+locations_cluster_scaled <- merge(locations_cluster_scaled, 
+                                  locations_cluster[, .(location_id, cluster)])
+
+cluster_results <- data.table::melt(locations_cluster_scaled[, !c('c40', 'c50'),
+                                                             with = FALSE], 
+                                    id.vars = c('location_id', 'location_name',
+                                                'cluster'))
+
+cluster_results <- cluster_results[, .(.N, value = mean(value)), 
+                                   by = .(cluster, variable)]
+
+cluster_results[, is_hashtag := grepl('^#', variable)]
+
+ht_top5 <- cluster_results[is_hashtag == TRUE, 
+                          .(ht_top5 = paste0(variable[value >= maxN(value, 5)], 
+                                             collapse = ' ')), 
+                          by = .(cluster)]
+
+cl_sum <- locations_cluster[, lapply(.SD, mean),
+                            by = cluster,
+                            .SDcols = c('time_peak', 'f_posts_freeday',
+                                        'n_likes_per_post')]
+
+cl_sum[, `Peak time` := as.POSIXct(time_peak, origin = '1970-01-01')]
+cl_sum[, `% of posts on a free day` := paste0(round(f_posts_freeday * 100, 1),
+                                              '%')]
+cl_sum[, `N likes per post` := round(n_likes_per_post, 1)]
+cl_sum[, `Top 5 hashtags` := ht_top5$ht_top5]
+cl_sum[, c('time_peak', 'f_posts_freeday', 'n_likes_per_post') := NULL, 
+       with = FALSE]
+
+cl_sum
+
+
+```
+
+
+## Clusters on the map
+
+```{r clusters_map, message = FALSE, fig.width = 8}
+
+
+
+# get subsample of locations data
+subsample <- merge(data.table(locations[, .(location_id, location_name, 
+                                            lon_, lat_, n_posts)], 
+                              key = 'location_id'),
+                   data.table(locations_cluster[, .(location_id, cluster)],
+                              key = 'location_id'))
+
+# build the ggmap plot
+# load the map
+map <- ggmap(karlin_map, extent = "panel", darken = c(0.3, colours[1]))
+# add points
+map <- map + geom_point(aes(x = lon_, y = lat_,
+                            colour = cluster, 
+                            size = n_posts,
+                            label = location_name), 
+                        data = subsample)
+
+# add legend for point size representing n of posts
+map <- map + scale_size_continuous(limits = c(0, max(subsample$n_posts)), 
+                                   range = c(0, 10),
+                                   breaks = c(100, 500, 1000),
+                                   name = "N posts")
+
+# add legend for colour representing the peak time
+map <- map + scale_colour_manual(values = colours[1:dim(cl_sum)[1]],
+                                 name = 'Cluster') 
+# add title
+map <- map + ggtitle(paste0('Spot clusters in Karlin'))
+
+# remove axes
+map <- map + theme(plot.title = element_text(size = 24),
+                   axis.title.y = element_blank(),
+                   axis.text.y = element_blank(),
+                   axis.ticks.y = element_blank(),
+                   axis.title.x = element_blank(),
+                   axis.text.x = element_blank(),
+                   axis.ticks.x = element_blank(),
+                   text = element_text(family = 'Lato', 
+                                       colour = rgb(81, 81, 81, max = 255)))
+
+
+
+ggplotly(map, tooltips = 'label')
+
+```
+
